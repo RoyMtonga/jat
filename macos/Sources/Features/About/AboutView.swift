@@ -3,45 +3,13 @@ import SwiftUI
 struct AboutView: View {
     @Environment(\.openURL) var openURL
 
-    private let githubURL = URL(string: "https://github.com/ghostty-org/ghostty")
-    private let docsURL = URL(string: "https://ghostty.org/docs")
+    private let githubURL = URL(string: "https://github.com/RoyMtonga/jat")
+    private let docsURL = URL(string: "https://github.com/RoyMtonga/jat#readme")
 
     /// Read the commit from the bundle.
     private var build: String? { Bundle.main.infoDictionary?["CFBundleVersion"] as? String }
     private var commit: String? { Bundle.main.infoDictionary?["GhosttyCommit"] as? String }
     private var version: String? { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String }
-
-    private enum VersionConfig {
-        case stable(version: String)
-        case tip(commit: String?)
-        case other(String)
-        case none
-
-        init(version: String?) {
-            guard let version else { self = .none; return }
-            if version.range(of: #"^\d+\.\d+\.\d+$"#, options: .regularExpression) != nil {
-                self = .stable(version: version)
-                return
-            }
-            if version.range(of: #"^[0-9a-f]{7,40}$"#, options: .regularExpression) != nil {
-                self = .tip(commit: version)
-                return
-            }
-            self = .other(version)
-        }
-
-        var url: URL? {
-            switch self {
-            case .stable(let version):
-                let slug = version.replacingOccurrences(of: ".", with: "-")
-                return URL(string: "https://ghostty.org/docs/install/release-notes/\(slug)")
-            default:
-                return nil
-            }
-        }
-    }
-
-    private var versionConfig: VersionConfig { VersionConfig(version: version) }
 
     private var copyright: String? { Bundle.main.infoDictionary?["NSHumanReadableCopyright"] as? String }
 
@@ -74,14 +42,18 @@ struct AboutView: View {
 
     var body: some View {
         VStack(alignment: .center) {
-            CyclingIconView()
+            Image("AppIconImage")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 96, height: 96)
+                .accessibilityHidden(true)
 
             VStack(alignment: .center, spacing: 32) {
                 VStack(alignment: .center, spacing: 8) {
-                    Text("Ghostty")
+                    Text("Jat")
                         .bold()
                         .font(.title)
-                    Text("Fast, native, feature-rich terminal \nemulator pushing modern features.")
+                    Text("Just Another Terminal · A macOS fork of Ghostty")
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                         .font(.caption)
@@ -91,21 +63,14 @@ struct AboutView: View {
                 .textSelection(.enabled)
 
                 VStack(spacing: 2) {
-                    switch versionConfig {
-                    case .stable(let version):
-                        PropertyRow(label: "Version", text: version, url: versionConfig.url)
-                    case .tip:
-                        PropertyRow(label: "Version", text: "Tip Release")
-                    case .other(let v):
-                        PropertyRow(label: "Version", text: v)
-                    case .none:
-                        EmptyView()
+                    if let version {
+                        PropertyRow(label: "Version", text: version)
                     }
                     if let build {
                         PropertyRow(label: "Build", text: build)
                     }
                     if let commit, commit != "",
-                       let url = githubURL?.appendingPathComponent("/commits/\(commit)") {
+                       let url = githubURL?.appendingPathComponent("commit").appendingPathComponent(commit) {
                         PropertyRow(label: "Commit", text: commit, url: url)
                     }
                 }

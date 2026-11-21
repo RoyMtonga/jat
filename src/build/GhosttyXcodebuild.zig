@@ -49,7 +49,7 @@ pub fn init(
     };
 
     const env = b.graph.environ_map;
-    const app_path = b.fmt("macos/build/{s}/Ghostty.app", .{xc_config});
+    const app_path = b.fmt("macos/build/{s}/Jat.app", .{xc_config});
 
     // Our step to build the Ghostty macOS app.
     const build = build: {
@@ -162,14 +162,12 @@ pub fn init(
         break :open open;
     };
 
-    // Our step to copy the app bundle to the install path.
-    // We have to use `cp -R` because there are symlinks in the
-    // bundle.
+    // Ditto preserves the framework symlinks in the app bundle.
     const copy = copy: {
         const step = RunStep.create(b, "copy app bundle");
-        step.addArgs(&.{ "cp", "-R" });
+        step.addArgs(&.{"/usr/bin/ditto"});
         step.addFileArg(b.path(app_path));
-        step.addDirectoryArg2(b.graph.path(.install_prefix, ""), .{});
+        step.addDirectoryArg2(b.graph.path(.install_prefix, "Jat.app"), .{});
         step.step.dependOn(&build.step);
         break :copy step;
     };
