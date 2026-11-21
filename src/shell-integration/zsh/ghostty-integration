@@ -402,6 +402,10 @@ _ghostty_deferred_init() {
         precmd_functions=(${precmd_functions:#_ghostty_deferred_init})
     fi
 
+    if [[ ",${GHOSTTY_SHELL_FEATURES-}," == *,suggestions,* && -n ${GHOSTTY_RESOURCES_DIR-} ]]; then
+        builtin source "$GHOSTTY_RESOURCES_DIR/shell-integration/zsh/vertical-suggestions.zsh"
+    fi
+
     # Unfunction _ghostty_deferred_init to save memory. Don't unfunction
     # ghostty-integration though because decent public functions aren't supposed to
     # to unfunction themselves when invoked. Unfunctioning is done by calling code.

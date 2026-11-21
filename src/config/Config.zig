@@ -2955,6 +2955,8 @@ keybind: Keybinds = .{},
 ///
 ///   * `sudo` - Set sudo wrapper to preserve terminfo.
 ///
+///   * `suggestions` - Show inline suggestions from zsh history.
+///
 ///   * `title` - Set the window title via shell integration.
 ///
 ///   * `ssh-env` - Enable SSH environment variable compatibility. Automatically
@@ -8891,6 +8893,7 @@ pub const ShellIntegration = enum {
 
 /// Shell integration features
 pub const ShellIntegrationFeatures = packed struct {
+    suggestions: bool = true,
     cursor: bool = true,
     sudo: bool = false,
     title: bool = true,
