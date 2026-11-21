@@ -14,7 +14,7 @@ class TitlebarTabsVenturaTerminalWindow: TerminalWindow {
         didSet {
             guard let titlebarContainer else { return }
             titlebarContainer.wantsLayer = true
-            titlebarContainer.layer?.backgroundColor = titlebarColor.cgColor
+            titlebarContainer.layer?.backgroundColor = drawsTitlebarBackground ? titlebarColor.cgColor : nil
         }
     }
 
@@ -228,9 +228,9 @@ class TitlebarTabsVenturaTerminalWindow: TerminalWindow {
 			else { return }
 
 			activeTabBackgroundView.layer?.backgroundColor = titlebarColor.cgColor
-			titlebarContainer.layer?.backgroundColor = titlebarColor.highlight(withLevel: 0.14)?.cgColor
+			titlebarContainer.layer?.backgroundColor = drawsTitlebarBackground ? titlebarColor.highlight(withLevel: 0.14)?.cgColor : nil
 		} else {
-			titlebarContainer.layer?.backgroundColor = titlebarColor.cgColor
+			titlebarContainer.layer?.backgroundColor = drawsTitlebarBackground ? titlebarColor.cgColor : nil
 		}
 	}
 

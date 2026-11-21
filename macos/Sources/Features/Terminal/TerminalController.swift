@@ -1092,6 +1092,15 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         shouldCascadeWindows = false
     }
 
+    private let verticalTabNavigation = VerticalTabNavigationState()
+    private var verticalTitleObservation: NSKeyValueObservation?
+    private weak var verticalSidebarBorder: VerticalSidebarBorder?
+    private var verticalSidebarBorderOffset: NSLayoutConstraint?
+    private weak var verticalSidebarBackdrop: VerticalSidebarBackdrop?
+    private var verticalSidebarBackdropWidth: NSLayoutConstraint?
+    private var verticalToggleOffset: NSLayoutConstraint?
+    fileprivate var animateNextSidebarChange = false
+
     override func windowDidLoad() {
         super.windowDidLoad()
         guard let window else { return }
@@ -1114,7 +1123,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         // Initialize our content view to the SwiftUI root
         let container = TerminalViewContainer {
-            TerminalView(ghostty: ghostty, viewModel: self, delegate: self)
+            VerticalTabLayout(controller: self) {
+                TerminalView(ghostty: ghostty, viewModel: self, delegate: self)
+            }
         }
 
         // Set the initial content size on the container so that
@@ -1123,7 +1134,13 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // SwiftUI focus chain.
         container.initialContentSize = focusedSurface?.initialSize
 
+        if window.styleMask.contains(.titled) {
+            window.styleMask.insert(.fullSizeContentView)
+            window.titlebarAppearsTransparent = true
+        }
         window.contentView = container
+        installVerticalTitlebar(on: window)
+        installVerticalSidebarBorder(in: container)
 
         // If we have a default size, we want to apply it.
         if let defaultSize {
@@ -1319,6 +1336,186 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     @IBAction func newTab(_ sender: Any?) {
         guard let surface = focusedSurface?.surface else { return }
         ghostty.newTab(surface: surface)
+    }
+
+    private func installVerticalSidebarBorder(in content: NSView) {
+        guard let frameView = content.superview else { return }
+
+        let backdrop = VerticalSidebarBackdrop()
+        backdrop.material = .sidebar
+        backdrop.blendingMode = .behindWindow
+        backdrop.state = .followsWindowActiveState
+        backdrop.translatesAutoresizingMaskIntoConstraints = false
+        frameView.addSubview(backdrop, positioned: .below, relativeTo: content)
+        let backdropWidth = backdrop.widthAnchor.constraint(equalToConstant: 0)
+        NSLayoutConstraint.activate([
+            backdropWidth,
+            backdrop.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            backdrop.topAnchor.constraint(equalTo: frameView.topAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+        ])
+        (window as? TerminalWindow)?.hasVerticalSidebarBackdrop = true
+        verticalSidebarBackdrop = backdrop
+        verticalSidebarBackdropWidth = backdropWidth
+
+        let border = VerticalSidebarBorder()
+        border.translatesAutoresizingMaskIntoConstraints = false
+        frameView.addSubview(border, positioned: .above, relativeTo: nil)
+        let offset = border.leadingAnchor.constraint(equalTo: content.leadingAnchor)
+        verticalSidebarBorderOffset = offset
+        NSLayoutConstraint.activate([
+            offset,
+            border.topAnchor.constraint(equalTo: frameView.topAnchor),
+            border.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            border.widthAnchor.constraint(equalToConstant: 1),
+        ])
+        verticalSidebarBorder = border
+        positionVerticalSidebarBorder(width: VerticalTabPreferences.isVisible ? VerticalTabPreferences.sidebarWidth : 0)
+    }
+
+    fileprivate func positionVerticalSidebarBorder(width: CGFloat) {
+        verticalSidebarBackdropWidth?.constant = max(0, width)
+        verticalSidebarBackdrop?.isHidden = width <= 0
+        verticalSidebarBorderOffset?.constant = max(0, width - 0.5)
+        verticalToggleOffset?.constant = width
+        verticalSidebarBorder?.alphaValue = min(1, width / 12)
+        verticalSidebarBorder?.isHidden = width <= 0
+    }
+
+    private func installVerticalTitlebar(on window: NSWindow) {
+        guard window.styleMask.contains(.titled) else { return }
+
+        if window.toolbar == nil {
+            let toolbar = NSToolbar(identifier: "VerticalTerminalTitlebar")
+            toolbar.allowsUserCustomization = false
+            window.toolbar = toolbar
+        }
+        window.toolbarStyle = .unified
+        window.titlebarSeparatorStyle = .none
+
+        let toggle = NonDraggableHostingView(rootView: VerticalTitlebarButton(
+            icon: "sidebar.left", label: "Toggle Sidebar"
+        ) { [weak self] in
+            guard let self else { return }
+            let event = NSApp.currentEvent?.type
+            self.animateNextSidebarChange = event == .leftMouseUp || event == .leftMouseDown
+            self.toggleVerticalTabs(nil)
+        })
+        let newTab = NonDraggableHostingView(rootView: VerticalTitlebarButton(
+            icon: "plus", label: "New Tab"
+        ) { [weak self] in self?.newTab(nil) })
+        let navigation = NonDraggableHostingView(rootView: VerticalTabNavigation(
+            state: verticalTabNavigation
+        ) { [weak self] offset in
+            self?.selectAdjacentVerticalTab(offset: offset)
+        })
+        if #available(macOS 13.3, *) {
+            // These views are already positioned inside the title bar by AppKit.
+            // Applying the window's safe area again pushes their buttons below it.
+            toggle.safeAreaRegions = []
+            newTab.safeAreaRegions = []
+            navigation.safeAreaRegions = []
+        }
+        window.titleVisibility = .hidden
+        guard let content = window.contentView, let frameView = content.superview else { return }
+
+        let title = NSTextField(labelWithString: window.title)
+        title.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+        title.lineBreakMode = .byTruncatingMiddle
+        title.toolTip = window.title
+        let toggleSize = toggle.fittingSize
+        let newTabSize = newTab.fittingSize
+        let navigationSize = navigation.fittingSize
+        for view in [title, toggle, navigation, newTab] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            frameView.addSubview(view, positioned: .above, relativeTo: nil)
+        }
+
+        let rowCenter: NSLayoutYAxisAnchor
+        let rowInset: CGFloat
+        if let closeButton = window.standardWindowButton(.closeButton), closeButton.isDescendant(of: frameView) {
+            rowCenter = closeButton.centerYAnchor
+            rowInset = 0
+        } else {
+            rowCenter = frameView.topAnchor
+            rowInset = frameView.isFlipped ? 22 : -22
+        }
+        let toggleLeading: NSLayoutConstraint
+        if let zoomButton = window.standardWindowButton(.zoomButton), zoomButton.isDescendant(of: frameView) {
+            toggleLeading = toggle.leadingAnchor.constraint(greaterThanOrEqualTo: zoomButton.trailingAnchor, constant: 8)
+        } else {
+            toggleLeading = toggle.leadingAnchor.constraint(greaterThanOrEqualTo: frameView.leadingAnchor, constant: 80)
+        }
+        // Follow the divider until the button reaches the traffic lights.
+        let toggleOffset = toggle.trailingAnchor.constraint(equalTo: content.leadingAnchor)
+        toggleOffset.priority = .defaultHigh
+        verticalToggleOffset = toggleOffset
+        let titleTrailing = title.trailingAnchor.constraint(
+            lessThanOrEqualTo: newTab.leadingAnchor, constant: -8
+        )
+        titleTrailing.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            toggleLeading,
+            toggleOffset,
+            toggle.centerYAnchor.constraint(equalTo: rowCenter, constant: rowInset),
+            toggle.widthAnchor.constraint(equalToConstant: toggleSize.width),
+            toggle.heightAnchor.constraint(equalToConstant: toggleSize.height),
+            newTab.trailingAnchor.constraint(equalTo: frameView.trailingAnchor, constant: -4),
+            newTab.centerYAnchor.constraint(equalTo: rowCenter, constant: rowInset),
+            newTab.widthAnchor.constraint(equalToConstant: newTabSize.width),
+            newTab.heightAnchor.constraint(equalToConstant: newTabSize.height),
+            navigation.leadingAnchor.constraint(equalTo: toggle.trailingAnchor, constant: 8),
+            navigation.centerYAnchor.constraint(equalTo: rowCenter, constant: rowInset),
+            navigation.widthAnchor.constraint(equalToConstant: navigationSize.width),
+            navigation.heightAnchor.constraint(equalToConstant: navigationSize.height),
+            title.leadingAnchor.constraint(equalTo: navigation.trailingAnchor, constant: 10),
+            title.centerYAnchor.constraint(equalTo: rowCenter, constant: rowInset),
+            title.widthAnchor.constraint(lessThanOrEqualToConstant: 220),
+            titleTrailing,
+        ])
+        verticalTitleObservation = window.observe(\.title) { [weak title] window, _ in
+            let value = window.title
+            DispatchQueue.main.async {
+                title?.stringValue = value
+                title?.toolTip = value
+            }
+        }
+    }
+
+    fileprivate func updateVerticalTabNavigation(windows: [NSWindow], selected: NSWindow?) {
+        let index = windows.firstIndex { $0 === selected }
+        let canGoBack = index.map { $0 > 0 } ?? false
+        let canGoForward = index.map { $0 + 1 < windows.count } ?? false
+        if verticalTabNavigation.canGoBack != canGoBack {
+            verticalTabNavigation.canGoBack = canGoBack
+        }
+        if verticalTabNavigation.canGoForward != canGoForward {
+            verticalTabNavigation.canGoForward = canGoForward
+        }
+    }
+
+    private func selectAdjacentVerticalTab(offset: Int) {
+        guard let window, let group = window.tabGroup,
+              let index = group.windows.firstIndex(where: { $0 === group.selectedWindow }),
+              let target = group.windows[safe: index + offset] else { return }
+        selectVerticalTab(target)
+        updateVerticalTabNavigation(windows: group.windows, selected: group.selectedWindow)
+    }
+
+    @discardableResult
+    fileprivate func selectVerticalTab(_ window: NSWindow) -> TerminalController? {
+        guard let target = window.windowController as? TerminalController else { return nil }
+        window.tabGroup?.selectedWindow = window
+        window.makeKeyAndOrderFront(nil)
+        if let surface = target.focusedSurface {
+            window.makeFirstResponder(surface)
+        }
+        return target
+    }
+
+    @IBAction func toggleVerticalTabs(_ sender: Any?) {
+        let defaults = UserDefaults.ghostty
+        defaults.set(!VerticalTabPreferences.isVisible, forKey: VerticalTabPreferences.key)
     }
 
     @IBAction func closeTab(_ sender: Any?) {
@@ -1743,11 +1940,337 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 }
 
+@MainActor
+enum VerticalTabPreferences {
+    static let key = "VerticalTabsVisible"
+    static let widthKey = "VerticalTabsWidth"
+    static let defaultWidth = 176.0
+
+    static var sidebarWidth: CGFloat {
+        clampedWidth(UserDefaults.ghostty.object(forKey: widthKey) as? Double ?? defaultWidth)
+    }
+
+    static func clampedWidth(_ width: Double) -> CGFloat {
+        CGFloat(min(max(width, 136), 320))
+    }
+
+    static var isVisible: Bool {
+        UserDefaults.ghostty.object(forKey: key) as? Bool ?? true
+    }
+}
+
+private final class VerticalSidebarBackdrop: NSVisualEffectView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+private final class VerticalSidebarBorder: NSView {
+    override var isFlipped: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let edge: CGFloat = 0.5
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: edge, y: 0))
+        path.line(to: NSPoint(x: edge, y: bounds.maxY))
+        NSColor.separatorColor.setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+}
+
+@MainActor
+private final class VerticalTabNavigationState: ObservableObject {
+    @Published var canGoBack = false
+    @Published var canGoForward = false
+}
+
+private struct VerticalTabNavigation: View {
+    @ObservedObject var state: VerticalTabNavigationState
+    let select: (Int) -> Void
+
+    var body: some View {
+        let controls = HStack(spacing: 0) {
+            arrow("chevron.left", label: "Previous Tab", offset: -1, enabled: state.canGoBack)
+            Divider().frame(height: 14)
+            arrow("chevron.right", label: "Next Tab", offset: 1, enabled: state.canGoForward)
+        }
+        .frame(height: 30)
+
+        Group {
+            if #available(macOS 26, *) {
+                controls.glassEffect(.regular, in: Capsule())
+            } else {
+                controls.background(.regularMaterial, in: Capsule())
+            }
+        }
+        .ignoresSafeArea()
+    }
+
+    private func arrow(_ icon: String, label: String, offset: Int, enabled: Bool) -> some View {
+        Button {
+            select(offset)
+        } label: {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 29, height: 30)
+                .contentShape(Rectangle())
+                .opacity(enabled ? 1 : 0.35)
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(label)
+        .help(label)
+    }
+}
+
+private struct VerticalTitlebarButton: View {
+    let icon: String
+    let label: String
+    let action: () -> Void
+
+    var body: some View {
+        Group {
+            if #available(macOS 26.0, *) {
+                Button(action: action) {
+                    glyph
+                        .frame(width: 30, height: 30)
+                        .glassEffect(.regular.interactive(), in: Circle())
+                }
+                .buttonStyle(.plain)
+            } else {
+                button.buttonStyle(.bordered)
+            }
+        }
+        .controlSize(.regular)
+        .help(label)
+        .accessibilityLabel(label)
+        .padding(.horizontal, 10)
+        .ignoresSafeArea()
+    }
+
+    private var button: some View {
+        Button(action: action) {
+            glyph
+        }
+    }
+
+    private var glyph: some View {
+        Image(systemName: icon)
+            .font(.system(size: 14, weight: .medium))
+            .imageScale(.medium)
+    }
+}
+
+private struct VerticalSidebarReveal: AnimatableModifier {
+    var width: CGFloat
+
+    var animatableData: CGFloat {
+        get { width }
+        set { width = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .frame(width: max(0, width), alignment: .trailing)
+            .clipped()
+    }
+}
+
+private struct VerticalTabLayout<Content: View>: View {
+    private struct Tab: Identifiable, Equatable {
+        let id: ObjectIdentifier
+        let title: String
+        let selected: Bool
+    }
+
+    weak var controller: TerminalController?
+    let content: Content
+    @AppStorage(VerticalTabPreferences.key, store: UserDefaults.ghostty) private var visible = true
+    @AppStorage(VerticalTabPreferences.widthKey, store: UserDefaults.ghostty)
+    private var savedWidth = VerticalTabPreferences.defaultWidth
+    @GestureState private var dragWidth: CGFloat?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var shown = VerticalTabPreferences.isVisible
+    @State private var tabs: [Tab] = []
+
+    init(controller: TerminalController, @ViewBuilder content: () -> Content) {
+        self.controller = controller
+        self.content = content()
+    }
+
+    private var windows: [NSWindow] {
+        guard let window = controller?.window else { return [] }
+        return window.tabGroup?.windows ?? [window]
+    }
+
+    private var sidebarWidth: CGFloat {
+        dragWidth ?? VerticalTabPreferences.clampedWidth(savedWidth)
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            sidebar
+                .modifier(VerticalSidebarReveal(width: shown ? sidebarWidth : 0))
+                .overlay(alignment: .trailing) {
+                    if shown { resizeHandle }
+                }
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                    controller?.positionVerticalSidebarBorder(width: width)
+                }
+                .allowsHitTesting(visible)
+                .accessibilityHidden(!visible)
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .onAppear { refresh() }
+        .onChange(of: visible) { value in
+            let animate = controller?.animateNextSidebarChange == true && !reduceMotion
+            controller?.animateNextSidebarChange = false
+            let motion = Animation.timingCurve(0.32, 0.72, 0, 1, duration: value ? 0.22 : 0.18)
+            withAnimation(animate ? motion : nil) {
+                shown = value
+            }
+            refresh()
+        }
+    }
+
+    private var sidebar: some View {
+        VStack(spacing: 8) {
+            ScrollView {
+                VStack(spacing: 6) {
+                    ForEach(tabs) { tab in
+                        tabRow(tab)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.bottom, 8)
+        .frame(width: sidebarWidth)
+        // AppKit doesn't send a single notification covering tab groups, title changes, and reorder.
+        .onReceive(Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()) { _ in
+            if controller?.window?.isVisible == true { refresh() }
+        }
+    }
+
+    private var resizeHandle: some View {
+        Color.clear
+            .frame(width: 12)
+            .contentShape(Rectangle())
+            .offset(x: 6)
+            .backport.pointerStyle(.resizeLeftRight)
+            .onHover { hovered in
+                if #unavailable(macOS 15) {
+                    if hovered { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                    .updating($dragWidth) { value, width, _ in
+                        width = VerticalTabPreferences.clampedWidth(
+                            savedWidth + Double(value.translation.width)
+                        )
+                    }
+                    .onEnded { value in
+                        savedWidth = Double(VerticalTabPreferences.clampedWidth(
+                            savedWidth + Double(value.translation.width)
+                        ))
+                    }
+            )
+            .accessibilityLabel("Sidebar width")
+            .accessibilityValue("\(Int(sidebarWidth)) points")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment:
+                    savedWidth = Double(VerticalTabPreferences.clampedWidth(savedWidth + 12))
+                case .decrement:
+                    savedWidth = Double(VerticalTabPreferences.clampedWidth(savedWidth - 12))
+                @unknown default:
+                    break
+                }
+            }
+    }
+
+    private func tabRow(_ tab: Tab) -> some View {
+        let trigger = Button {
+            select(tab)
+        } label: {
+            Text(tab.title)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .padding(.trailing, 22)
+                .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+
+        return Group {
+            if #available(macOS 26.0, *) {
+                if tab.selected {
+                    trigger.buttonStyle(.glass).buttonBorderShape(.capsule)
+                } else {
+                    trigger.buttonStyle(.glass(.clear)).buttonBorderShape(.capsule)
+                }
+            } else if tab.selected {
+                trigger.buttonStyle(.borderedProminent)
+                    .tint(.secondary)
+            } else {
+                trigger.buttonStyle(.bordered)
+            }
+        }
+        .accessibilityAddTraits(tab.selected ? .isSelected : [])
+        .help(tab.title)
+        .overlay(alignment: .trailing) {
+            Button {
+                select(tab)?.closeTab(nil)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 5)
+            .accessibilityLabel("Close \(tab.title)")
+            .help("Close Tab")
+        }
+        .contextMenu {
+            Button("Rename Tab…") { select(tab)?.promptTabTitle() }
+        }
+    }
+
+    @discardableResult
+    private func select(_ tab: Tab) -> TerminalController? {
+        guard let window = windows.first(where: { ObjectIdentifier($0) == tab.id }) else { return nil }
+        let target = controller?.selectVerticalTab(window)
+        refresh()
+        return target
+    }
+
+    private func refresh() {
+        let selected = controller?.window?.tabGroup?.selectedWindow ?? controller?.window
+        let group = windows
+        controller?.updateVerticalTabNavigation(windows: group, selected: selected)
+        for case let window as TerminalWindow in group {
+            window.syncVerticalTabBar()
+        }
+        let snapshot = group.map {
+            Tab(id: ObjectIdentifier($0), title: $0.title.isEmpty ? "Terminal" : $0.title, selected: $0 === selected)
+        }
+        if tabs != snapshot { tabs = snapshot }
+    }
+}
+
 // MARK: NSMenuItemValidation
 
 extension TerminalController {
     override func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
+        case #selector(toggleVerticalTabs):
+            item.state = VerticalTabPreferences.isVisible ? .on : .off
+            return window != nil
+
         case #selector(closeTabsOnTheRight):
             guard let window, let tabGroup = window.tabGroup else { return false }
             guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return false }

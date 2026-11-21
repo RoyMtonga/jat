@@ -261,6 +261,7 @@ class TerminalWindow: NSWindow {
         if isTabBar(childViewController) {
             childViewController.identifier = Self.tabBarIdentifier
             tabBarDidAppear()
+            syncVerticalTabBar()
         }
     }
 
@@ -277,6 +278,16 @@ class TerminalWindow: NSWindow {
     /// This identifier is attached to the tab bar view controller when we detect it being
     /// added.
     static let tabBarIdentifier: NSUserInterfaceItemIdentifier = .init("_ghosttyTabBar")
+
+    func syncVerticalTabBar() {
+        guard windowController is TerminalController else { return }
+        // The sidebar toggle only controls the custom UI. AppKit still owns the tab group.
+        for accessory in titlebarAccessoryViewControllers where accessory.identifier == Self.tabBarIdentifier {
+            if !accessory.isHidden {
+                accessory.isHidden = true
+            }
+        }
+    }
 
     func isTabBar(_ childViewController: NSTitlebarAccessoryViewController) -> Bool {
         if childViewController.identifier == nil {
@@ -432,6 +443,12 @@ class TerminalWindow: NSWindow {
             .foregroundColor: isKeyWindow ? NSColor.labelColor : NSColor.secondaryLabelColor,
         ]
         return NSAttributedString(string: title, attributes: attributes)
+    }
+
+    var hasVerticalSidebarBackdrop = false
+
+    var drawsTitlebarBackground: Bool {
+        !hasVerticalSidebarBackdrop || styleMask.contains(.fullScreen)
     }
 
     var titlebarContainer: NSView? {
