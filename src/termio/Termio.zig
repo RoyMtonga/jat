@@ -616,11 +616,10 @@ pub fn clearScreen(self: *Termio, td: *ThreadData, history: bool) !void {
         // Clear our selection
         self.terminal.screens.active.clearSelection();
 
-        // Clear our scrollback
-        if (history) self.terminal.eraseDisplay(.scrollback, false);
-
         // If we're not at a prompt, we just delete above the cursor.
         if (!self.terminal.cursorIsAtPrompt()) {
+            if (history) self.terminal.eraseDisplay(.scrollback, false);
+
             if (self.terminal.screens.active.cursor.y > 0) {
                 self.terminal.screens.active.eraseActive(
                     self.terminal.screens.active.cursor.y - 1,
@@ -645,12 +644,11 @@ pub fn clearScreen(self: *Termio, td: *ThreadData, history: bool) !void {
 
         // At a prompt, we want to first fully clear the screen, and then after
         // send a FF (0x0C) to the shell so that it can repaint the screen.
-        // Mark the current row as a not a prompt so we can properly
-        // clear the full screen in the next eraseDisplay call.
-        // TODO: fix this
-        // self.terminal.markSemanticPrompt(.command);
-        // assert(!self.terminal.cursorIsAtPrompt());
         self.terminal.eraseDisplay(.complete, false);
+
+        // At a prompt, a complete erase can move visible rows into scrollback.
+        // Erase history after that move so the first clear removes those rows.
+        if (history) self.terminal.eraseDisplay(.scrollback, false);
     }
 
     // If we reached here it means we're at a prompt, so we send a form-feed.

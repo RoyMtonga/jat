@@ -62,6 +62,9 @@ pub const StreamHandler = struct {
     //---------------------------------------------------------------
     // Internal state
 
+    /// Tracks ED 3 followed by an optional cursor home and ED 2.
+    scrollback_just_erased: bool = false,
+
     /// The APC command handler maintains the APC state. APC is like
     /// CSI or OSC, but it is a private escape sequence that is used
     /// to send commands to the terminal emulator. This is used by
@@ -190,6 +193,14 @@ pub const StreamHandler = struct {
         comptime action: Stream.Action.Tag,
         value: Stream.Action.Value(action),
     ) void {
+        // Only the clear-screen sequence may carry an ED 3 into ED 2.
+        switch (action) {
+            .erase_display_scrollback, .erase_display_complete => {},
+            .cursor_pos => {
+                if (value.row != 1 or value.col != 1) self.scrollback_just_erased = false;
+            },
+            else => self.scrollback_just_erased = false,
+        }
         self.vtFallible(action, value) catch |err| {
             log.warn("error handling VT action action={} err={}", .{ action, err });
         };
@@ -255,8 +266,17 @@ pub const StreamHandler = struct {
             .erase_display_complete => {
                 self.terminal.scrollViewport(.{ .bottom = {} });
                 self.terminal.eraseDisplay(.complete, value);
+                // macOS clear emits ED 3 before ED 2. At a shell prompt ED 2
+                // can refill scrollback, so finish the explicit history erase.
+                if (self.scrollback_just_erased) {
+                    self.scrollback_just_erased = false;
+                    self.terminal.eraseDisplay(.scrollback, false);
+                }
             },
-            .erase_display_scrollback => self.terminal.eraseDisplay(.scrollback, value),
+            .erase_display_scrollback => {
+                self.terminal.eraseDisplay(.scrollback, value);
+                self.scrollback_just_erased = true;
+            },
             .erase_display_scroll_complete => self.terminal.eraseDisplay(.scroll_complete, value),
             .erase_line_right => self.terminal.eraseLine(.right, value),
             .erase_line_left => self.terminal.eraseLine(.left, value),
